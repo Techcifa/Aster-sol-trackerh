@@ -77,8 +77,10 @@ async def main():
     else:
         print("[main] Telegram token or WEBHOOK_BASE_URL is not set. Skipping webhook registration.")
 
-    # Configure and start FastAPI + Uvicorn server
-    config = uvicorn.Config(app, host="0.0.0.0", port=8000)
+    # Configure and start FastAPI + Uvicorn server (reading PORT from env for Railway support)
+    import os
+    port = int(os.getenv("PORT", "8000"))
+    config = uvicorn.Config(app, host="0.0.0.0", port=port)
     server = uvicorn.Server(config)
     await server.serve()
 
