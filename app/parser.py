@@ -51,59 +51,142 @@ async def parse_transaction(tx: dict) -> list[dict]:
     events_block: dict = tx.get("events", {}) or {}
     swap_data: dict | None = events_block.get("swap")
 
+    # 1. Try Helius event-based swap parser first
     is_swap = tx_type == "SWAP" or swap_data is not None
-
-    events: list[dict] = []
-
     if is_swap and swap_data:
         wallet = _find_swap_wallet(swap_data, fee_payer, tracked_wallets)
         if wallet:
             swap_events = await _parse_swap(
                 swap_data, wallet, tx_sig, timestamp
             )
-            events.extend(swap_events)
-    else:
-        # ---- SOL transfers ----
-        for transfer in tx.get("nativeTransfers", []) or []:
-            from_acc: str = transfer.get("fromUserAccount", "")
-            to_acc: str = transfer.get("toUserAccount", "")
-            lamports: int = transfer.get("amount", 0)
-            amount_sol: float = lamports / 1_000_000_000
+            if swap_events:
+                return swap_events
 
-            for wallet in tracked_wallets:
-                if from_acc == wallet:
-                    event = await _build_sol_transfer_event(
-                        wallet, "OUT", amount_sol, to_acc, tx_sig, timestamp
-                    )
-                    events.append(event)
-                elif to_acc == wallet:
-                    event = await _build_sol_transfer_event(
-                        wallet, "IN", amount_sol, from_acc, tx_sig, timestamp
-                    )
-                    events.append(event)
+    # 2. Try Fallback swap parser (analyzing actual native/token transfers for swaps)
+    # This matches trades executed via Telegram bots or custom routers where Helius fails to populate events.swap
+    for wallet in tracked_wallets:
+        fallback_swap_events = await _parse_fallback_swap(tx, wallet, tx_sig, timestamp)
+        if fallback_swap_events:
+            return fallback_swap_events
 
-        # ---- Token transfers (only when not a swap) ----
-        for transfer in tx.get("tokenTransfers", []) or []:
-            from_acc = transfer.get("fromUserAccount", "")
-            to_acc = transfer.get("toUserAccount", "")
-            mint: str = transfer.get("mint", "")
-            raw_amount: float = float(transfer.get("tokenAmount", 0))
-            decimals: int = int(transfer.get("decimals", 0))
-            amount: float = raw_amount / (10 ** decimals) if decimals >= 0 else raw_amount
+    # 3. Otherwise, parse as individual transfer events
+    events: list[dict] = []
 
-            meta = await get_token_metadata(mint)
+    # ---- SOL transfers ----
+    for transfer in tx.get("nativeTransfers", []) or []:
+        from_acc: str = transfer.get("fromUserAccount", "")
+        to_acc: str = transfer.get("toUserAccount", "")
+        lamports: int = transfer.get("amount", 0)
+        amount_sol: float = lamports / 1_000_000_000
 
-            for wallet in tracked_wallets:
-                if from_acc == wallet:
-                    events.append(_build_token_transfer_event(
-                        wallet, "OUT", mint, meta, amount, to_acc, tx_sig, timestamp
-                    ))
-                elif to_acc == wallet:
-                    events.append(_build_token_transfer_event(
-                        wallet, "IN", mint, meta, amount, from_acc, tx_sig, timestamp
-                    ))
+        for wallet in tracked_wallets:
+            if from_acc == wallet:
+                event = await _build_sol_transfer_event(
+                    wallet, "OUT", amount_sol, to_acc, tx_sig, timestamp
+                )
+                events.append(event)
+            elif to_acc == wallet:
+                event = await _build_sol_transfer_event(
+                    wallet, "IN", amount_sol, from_acc, tx_sig, timestamp
+                )
+                events.append(event)
+
+    # ---- Token transfers ----
+    for transfer in tx.get("tokenTransfers", []) or []:
+        from_acc = transfer.get("fromUserAccount", "")
+        to_acc = transfer.get("toUserAccount", "")
+        mint: str = transfer.get("mint", "")
+        raw_amount: float = float(transfer.get("tokenAmount", 0))
+        decimals: int = int(transfer.get("decimals", 0))
+        amount: float = raw_amount / (10 ** decimals) if decimals >= 0 else raw_amount
+
+        meta = await get_token_metadata(mint)
+
+        for wallet in tracked_wallets:
+            if from_acc == wallet:
+                events.append(_build_token_transfer_event(
+                    wallet, "OUT", mint, meta, amount, to_acc, tx_sig, timestamp
+                ))
+            elif to_acc == wallet:
+                events.append(_build_token_transfer_event(
+                    wallet, "IN", mint, meta, amount, from_acc, tx_sig, timestamp
+                ))
 
     return events
+
+
+async def _parse_fallback_swap(
+    tx: dict, wallet: str, tx_sig: str, timestamp: int
+) -> list[dict]:
+    """
+    Analyzes outer transfers to detect a BUY, SELL, or TOKEN_SWAP.
+    This acts as a fallback when Helius does not supply an events.swap block.
+    """
+    # Calculate SOL transferred out and in by the wallet
+    sol_out = 0.0
+    sol_in = 0.0
+    for transfer in tx.get("nativeTransfers", []) or []:
+        from_acc = transfer.get("fromUserAccount", "")
+        to_acc = transfer.get("toUserAccount", "")
+        amount_lamports = transfer.get("amount", 0)
+        amount_sol = amount_lamports / 1_000_000_000
+
+        if from_acc == wallet:
+            sol_out += amount_sol
+        if to_acc == wallet:
+            sol_in += amount_sol
+
+    net_sol_out = sol_out - sol_in
+    net_sol_in = sol_in - sol_out
+
+    # Gather token transfers for the wallet
+    tokens_out: list[dict] = []
+    tokens_in: list[dict] = []
+    for transfer in tx.get("tokenTransfers", []) or []:
+        from_acc = transfer.get("fromUserAccount", "")
+        to_acc = transfer.get("toUserAccount", "")
+        
+        raw_amt = float(transfer.get("tokenAmount", 0))
+        decimals = int(transfer.get("decimals", 6))
+        raw_token_amount = int(raw_amt * (10 ** decimals))
+
+        tok_entry = {
+            "mint": transfer.get("mint", ""),
+            "rawTokenAmount": {
+                "tokenAmount": str(raw_token_amount),
+                "decimals": decimals
+            }
+        }
+
+        if from_acc == wallet:
+            tokens_out.append(tok_entry)
+        if to_acc == wallet:
+            tokens_in.append(tok_entry)
+
+    events = []
+
+    # 1. SOL -> Token (BUY Swap)
+    if net_sol_out > 0.0 and tokens_in:
+        sol_per_token = net_sol_out / len(tokens_in)
+        for tok_out in tokens_in:
+            ev = await _build_buy_event(wallet, sol_per_token, tok_out, tx_sig, timestamp)
+            events.append(ev)
+
+    # 2. Token -> SOL (SELL Swap)
+    elif net_sol_in > 0.0 and tokens_out:
+        sol_per_token = net_sol_in / len(tokens_out)
+        for tok_in in tokens_out:
+            ev = await _build_sell_event(wallet, sol_per_token, tok_in, tx_sig, timestamp)
+            events.append(ev)
+
+    # 3. Token -> Token (TOKEN_SWAP)
+    elif tokens_in and tokens_out:
+        for tok_in, tok_out in zip(tokens_out, tokens_in):
+            ev = await _build_token_swap_event(wallet, tok_in, tok_out, tx_sig, timestamp)
+            events.append(ev)
+
+    return events
+
 
 
 
