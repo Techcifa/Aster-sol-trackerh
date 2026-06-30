@@ -30,11 +30,46 @@ bot_token = settings.TELEGRAM_BOT_TOKEN or "123456789:AABBCCDDEEFFggbbee"
 bot = Bot(token=bot_token)
 dp = Dispatcher()
 
-# 3. Initialize FastAPI App
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    FastAPI lifespan handler. Executes database schema init, Helius registration,
+    and Telegram webhook registration on application startup.
+    """
+    # Initialize SQLite database schema
+    await db.init()
+
+    # Ensure Helius webhook is registered
+    if settings.HELIUS_API_KEY:
+        try:
+            await helius.ensure_webhook_registered()
+        except Exception as exc:
+            print(f"[lifespan] Failed to ensure Helius webhook registration: {exc}")
+    else:
+        print("[lifespan] HELIUS_API_KEY is not set. Skipping webhook setup.")
+
+    # Register bot webhook URL with Telegram
+    if settings.TELEGRAM_BOT_TOKEN and settings.WEBHOOK_BASE_URL:
+        try:
+            bot_webhook = settings.bot_webhook_url
+            print(f"[lifespan] Setting Telegram webhook to {bot_webhook} ...")
+            await bot.set_webhook(bot_webhook)
+        except Exception as exc:
+            print(f"[lifespan] Failed to set Telegram webhook: {exc}")
+    else:
+        print("[lifespan] Telegram token or WEBHOOK_BASE_URL is not set. Skipping webhook registration.")
+
+    yield
+
+
+# 3. Initialize FastAPI App with Lifespan
 app = FastAPI(
     title="Solana Wallet Tracker",
     description="Real-time Solana wallet transfers and swaps tracking bot via Helius & Jupiter",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan
 )
 
 # Store instances in app state for access by HTTP route handlers
@@ -51,33 +86,8 @@ dp.include_router(bot_router)
 
 async def main():
     """
-    Bootstrap lifecycle: database schema init, Helius registration,
-    Telegram webhook registration, and FastAPI execution loop.
+    Fallback runner when main.py is executed directly via python main.py
     """
-    # Initialize SQLite database schema
-    await db.init()
-
-    # Ensure Helius webhook is registered
-    if settings.HELIUS_API_KEY:
-        try:
-            await helius.ensure_webhook_registered()
-        except Exception as exc:
-            print(f"[main] Failed to ensure Helius webhook registration: {exc}")
-    else:
-        print("[main] HELIUS_API_KEY is not set. Skipping webhook setup.")
-
-    # Register bot webhook URL with Telegram
-    if settings.TELEGRAM_BOT_TOKEN and settings.WEBHOOK_BASE_URL:
-        try:
-            bot_webhook = settings.bot_webhook_url
-            print(f"[main] Setting Telegram webhook to {bot_webhook} ...")
-            await bot.set_webhook(bot_webhook)
-        except Exception as exc:
-            print(f"[main] Failed to set Telegram webhook: {exc}")
-    else:
-        print("[main] Telegram token or WEBHOOK_BASE_URL is not set. Skipping webhook registration.")
-
-    # Configure and start FastAPI + Uvicorn server (reading PORT from env for Railway support)
     import os
     port = int(os.getenv("PORT", "8000"))
     config = uvicorn.Config(app, host="0.0.0.0", port=port)
@@ -87,3 +97,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
