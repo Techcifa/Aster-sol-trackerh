@@ -173,3 +173,35 @@ async def _fetch_prices_batch(token_mints: list[str]) -> dict[str, float]:
     except Exception as exc:  # noqa: BLE001
         print(f"[jupiter] Price fetch failed for {token_mints}: {exc}")
         return {mint: 0.0 for mint in token_mints}
+
+
+async def get_sol_price_in_usd() -> float:
+    """
+    Return the current price of SOL in USD.
+    Uses the in-memory cache if it is fresh (< 30 seconds old).
+    """
+    cached = _price_cache.get("SOL_USD")
+    if cached is not None:
+        age = time.monotonic() - cached["fetched_at"]
+        if age < _CACHE_TTL_SECONDS:
+            return cached["price"]
+
+    params = {
+        "ids": _WSOL_MINT
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(_JUPITER_PRICE_URL, params=params)
+            resp.raise_for_status()
+            payload = resp.json()
+
+        data: dict = payload.get("data", {})
+        entry = data.get(_WSOL_MINT)
+        price = float(entry["price"]) if entry and "price" in entry else 140.0
+    except Exception as exc:
+        print(f"[jupiter] SOL USD price fetch failed: {exc}")
+        price = 140.0  # Safe fallback
+
+    _price_cache["SOL_USD"] = {"price": price, "fetched_at": time.monotonic()}
+    return price
+

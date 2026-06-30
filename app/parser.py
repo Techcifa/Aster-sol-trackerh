@@ -163,26 +163,27 @@ async def _parse_fallback_swap(
         if to_acc == wallet:
             tokens_in.append(tok_entry)
 
+    source = tx.get("source", "DEX")
     events = []
 
     # 1. SOL -> Token (BUY Swap)
     if net_sol_out > 0.0 and tokens_in:
         sol_per_token = net_sol_out / len(tokens_in)
         for tok_out in tokens_in:
-            ev = await _build_buy_event(wallet, sol_per_token, tok_out, tx_sig, timestamp)
+            ev = await _build_buy_event(wallet, sol_per_token, tok_out, tx_sig, timestamp, source)
             events.append(ev)
 
     # 2. Token -> SOL (SELL Swap)
     elif net_sol_in > 0.0 and tokens_out:
         sol_per_token = net_sol_in / len(tokens_out)
         for tok_in in tokens_out:
-            ev = await _build_sell_event(wallet, sol_per_token, tok_in, tx_sig, timestamp)
+            ev = await _build_sell_event(wallet, sol_per_token, tok_in, tx_sig, timestamp, source)
             events.append(ev)
 
     # 3. Token -> Token (TOKEN_SWAP)
     elif tokens_in and tokens_out:
         for tok_in, tok_out in zip(tokens_out, tokens_in):
-            ev = await _build_token_swap_event(wallet, tok_in, tok_out, tx_sig, timestamp)
+            ev = await _build_token_swap_event(wallet, tok_in, tok_out, tx_sig, timestamp, source)
             events.append(ev)
 
     return events
@@ -303,6 +304,7 @@ async def _parse_swap(
     wallet: str,
     tx_sig: str,
     timestamp: int,
+    source: str = "DEX",
 ) -> list[dict]:
     """
     Determine swap direction relative to the tracked wallet and build event(s).
@@ -334,7 +336,7 @@ async def _parse_swap(
         sol_amount = _lamports_to_sol(w_native_in.get("amount", "0"))
         for tok_out in w_token_outs:
             ev = await _build_buy_event(
-                wallet, sol_amount, tok_out, tx_sig, timestamp
+                wallet, sol_amount, tok_out, tx_sig, timestamp, source
             )
             events.append(ev)
 
@@ -343,7 +345,7 @@ async def _parse_swap(
         sol_amount = _lamports_to_sol(w_native_out.get("amount", "0"))
         for tok_in in w_token_ins:
             ev = await _build_sell_event(
-                wallet, sol_amount, tok_in, tx_sig, timestamp
+                wallet, sol_amount, tok_in, tx_sig, timestamp, source
             )
             events.append(ev)
 
@@ -352,7 +354,7 @@ async def _parse_swap(
         # Pair up inputs and outputs (typically 1:1)
         for tok_in, tok_out in zip(w_token_ins, w_token_outs):
             ev = await _build_token_swap_event(
-                wallet, tok_in, tok_out, tx_sig, timestamp
+                wallet, tok_in, tok_out, tx_sig, timestamp, source
             )
             events.append(ev)
 
@@ -365,6 +367,7 @@ async def _build_buy_event(
     tok_out: dict,
     tx_sig: str,
     timestamp: int,
+    source: str = "DEX",
 ) -> dict:
     """Build a SWAP/BUY event and persist position + buy_lot to DB."""
     mint, amount = _extract_token_amount(tok_out)
@@ -410,6 +413,7 @@ async def _build_buy_event(
         "is_first_buy": is_first_buy,
         "tx_sig": tx_sig,
         "timestamp": timestamp,
+        "source": source,
     }
 
 
@@ -419,6 +423,7 @@ async def _build_sell_event(
     tok_in: dict,
     tx_sig: str,
     timestamp: int,
+    source: str = "DEX",
 ) -> dict:
     """Build a SWAP/SELL event and persist updated position totals to DB."""
     mint, amount = _extract_token_amount(tok_in)
@@ -450,6 +455,7 @@ async def _build_sell_event(
         "is_first_buy": False,
         "tx_sig": tx_sig,
         "timestamp": timestamp,
+        "source": source,
     }
 
 
@@ -459,6 +465,7 @@ async def _build_token_swap_event(
     tok_out: dict,
     tx_sig: str,
     timestamp: int,
+    source: str = "DEX",
 ) -> dict:
     """Build a SWAP/TOKEN_SWAP event (token-to-token, no SOL side)."""
     mint_in, amount_in = _extract_token_amount(tok_in)
@@ -497,6 +504,7 @@ async def _build_token_swap_event(
         "is_first_buy": is_first_buy,
         "tx_sig": tx_sig,
         "timestamp": timestamp,
+        "source": source,
     }
 
 

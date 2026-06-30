@@ -73,11 +73,11 @@ async def process_event(event: dict, bot) -> None:
         label = await db.get_wallet_label(tg_id, wallet)
 
         if event_type == "SOL_TRANSFER":
-            text = alerts.format_sol_transfer(event, label)
+            text = await alerts.format_sol_transfer(event, label)
         elif event_type == "TOKEN_TRANSFER":
-            text = alerts.format_token_transfer(event, label)
+            text = await alerts.format_token_transfer(event, label)
         elif event_type == "SWAP":
-            text = alerts.format_swap(event, label)
+            text = await alerts.format_swap(event, label)
         else:
             text = ""
 

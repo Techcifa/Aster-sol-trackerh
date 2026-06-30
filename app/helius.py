@@ -245,3 +245,38 @@ async def get_token_metadata(token_mint: str) -> dict:
 
     _metadata_cache[token_mint] = meta
     return meta
+
+
+_supply_cache: dict[str, float] = {}
+
+
+async def get_token_supply(token_mint: str) -> float:
+    """
+    Fetch the total supply of a token mint using the Solana JSON-RPC getTokenSupply endpoint.
+    Caches the results to prevent repeated RPC queries.
+    """
+    if token_mint in _supply_cache:
+        return _supply_cache[token_mint]
+
+    payload = {
+        "jsonrpc": "2.0",
+        "id": "get-token-supply",
+        "method": "getTokenSupply",
+        "params": [token_mint],
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(settings.helius_rpc_url, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+
+        supply_val = data["result"]["value"]["uiAmount"]
+        if supply_val is not None:
+            _supply_cache[token_mint] = float(supply_val)
+            return float(supply_val)
+    except Exception as exc:
+        print(f"[helius] Failed to fetch supply for {token_mint}: {exc}")
+
+    return 1_000_000_000.0  # Fallback default supply (1 Billion)
+
