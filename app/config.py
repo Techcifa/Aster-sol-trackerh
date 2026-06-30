@@ -62,12 +62,18 @@ class Settings:
     @property
     def helius_webhook_url(self) -> str:
         """Full public URL that Helius will POST transactions to."""
-        return f"{self.WEBHOOK_BASE_URL}{self.HELIUS_WEBHOOK_PATH}"
+        url = f"{self.WEBHOOK_BASE_URL}{self.HELIUS_WEBHOOK_PATH}"
+        if not url.startswith("http://") and not url.startswith("https://"):
+            url = f"https://{url}"
+        return url
 
     @property
     def bot_webhook_url(self) -> str:
         """Full public URL that Telegram will POST updates to."""
-        return f"{self.WEBHOOK_BASE_URL}{self.BOT_WEBHOOK_PATH}"
+        url = f"{self.WEBHOOK_BASE_URL}{self.BOT_WEBHOOK_PATH}"
+        if not url.startswith("http://") and not url.startswith("https://"):
+            url = f"https://{url}"
+        return url
 
     def validate(self) -> None:
         """
