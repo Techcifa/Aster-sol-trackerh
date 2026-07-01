@@ -164,6 +164,7 @@ async def format_swap_buy(event: dict, label: str | None) -> str:
         f"swapped <b>{sol_amount:.2f} SOL</b> (<a href=\"https://solscan.io/token/So11111111111111111111111111111111111111112\">SOL</a>) "
         f"for <b>{token_amount:,.2f}</b> (${usd_value:,.2f}) "
         f"<a href=\"https://solscan.io/token/{mint}\">{symbol}</a> @${_format_usd_price(usd_price)}\n\n"
+        f"CA: <code>{mint}</code>\n"
         f"🔗 #{symbol} | MC: {_format_market_cap(market_cap)} | Seen: {seen_time}"
     )
 
@@ -205,6 +206,7 @@ async def format_swap_sell(event: dict, label: str | None) -> str:
         f"@{_format_usd_price(usd_price)} (${usd_value:,.2f})\n\n"
         f"📈 PnL on sell: <b>{event['sell_pnl']:+.4f} SOL ({event['sell_pnl_pct']:+.1f}%)</b>\n"
         f"Remaining: <b>{event['tokens_remaining']:,.2f} {symbol}</b>\n\n"
+        f"CA: <code>{mint}</code>\n"
         f"🔗 #{symbol} | MC: {_format_market_cap(market_cap)} | Seen: {seen_time}"
     )
 
@@ -236,5 +238,6 @@ async def format_token_swap(event: dict, label: str | None) -> str:
         f"🔹<a href=\"https://solscan.io/account/{wallet}?exclude_amount_zero=true&remove_spam=true#transfers\">{wallet_display}</a> "
         f"swapped <b>{amount_in:,.2f} {symbol_in}</b> (<a href=\"https://solscan.io/token/{mint_in}\">{symbol_in}</a>) "
         f"for <b>{amount_out:,.2f} {symbol_out}</b> (<a href=\"https://solscan.io/token/{mint_out}\">{symbol_out}</a>)\n\n"
+        f"CA: <code>{mint_out}</code>\n"
         f"🔗 #{symbol_out} | Seen: {seen_time}"
     )
