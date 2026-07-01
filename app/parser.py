@@ -136,22 +136,28 @@ async def _parse_fallback_swap(
         if to_acc == wallet:
             sol_in += amount_sol
 
-    net_sol_out = sol_out - sol_in
-    net_sol_in = sol_in - sol_out
-
     # Gather token transfers for the wallet
     tokens_out: list[dict] = []
     tokens_in: list[dict] = []
     for transfer in tx.get("tokenTransfers", []) or []:
         from_acc = transfer.get("fromUserAccount", "")
         to_acc = transfer.get("toUserAccount", "")
+        mint = transfer.get("mint", "")
         
         raw_amt = float(transfer.get("tokenAmount", 0))
         decimals = int(transfer.get("decimals", 6))
         raw_token_amount = int(raw_amt * (10 ** decimals))
 
+        # WSOL is functionally equivalent to native SOL for swap detection
+        if mint == "So11111111111111111111111111111111111111112":
+            if from_acc == wallet:
+                sol_out += raw_amt
+            if to_acc == wallet:
+                sol_in += raw_amt
+            continue
+
         tok_entry = {
-            "mint": transfer.get("mint", ""),
+            "mint": mint,
             "rawTokenAmount": {
                 "tokenAmount": str(raw_token_amount),
                 "decimals": decimals
@@ -162,6 +168,9 @@ async def _parse_fallback_swap(
             tokens_out.append(tok_entry)
         if to_acc == wallet:
             tokens_in.append(tok_entry)
+
+    net_sol_out = sol_out - sol_in
+    net_sol_in = sol_in - sol_out
 
     source = tx.get("source", "DEX")
     events = []
