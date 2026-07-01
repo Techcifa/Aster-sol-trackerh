@@ -1,15 +1,14 @@
 """
 app/jupiter.py
 
-Jupiter Price API v2 client.
+Jupiter Price API v3 client.
 
 Endpoint:
-    GET https://price.jup.ag/v6/price
-        ?ids={token_mint}
-        &vsToken=So11111111111111111111111111111111111111112
+    GET https://api.jup.ag/price/v3
+        ?ids={token_mints}
 
-Returns the token price denominated in SOL.
-Parses `data[token_mint].price`.
+Returns the token price in USD. The client converts it to SOL dynamically
+by fetching the live USD price of SOL and calculating token_usd / sol_usd.
 
 Cache:
     Prices are cached in-memory with a 30-second TTL to avoid hammering
@@ -24,9 +23,9 @@ import httpx
 # Constants
 # ---------------------------------------------------------------------------
 
-_JUPITER_PRICE_URL = "https://price.jup.ag/v6/price"
+_JUPITER_PRICE_URL = "https://api.jup.ag/price/v3"
 
-# Wrapped SOL mint — used as the vsToken so prices come back in SOL
+# Wrapped SOL mint
 _WSOL_MINT = "So11111111111111111111111111111111111111112"
 
 # Cache TTL in seconds
@@ -35,7 +34,7 @@ _CACHE_TTL_SECONDS = 30
 # ---------------------------------------------------------------------------
 # In-memory price cache
 # key: token_mint str
-# value: {"price": float, "fetched_at": float}  (fetched_at = time.monotonic())
+# value: {"price": float, "fetched_at": float}
 # ---------------------------------------------------------------------------
 _price_cache: dict[str, dict] = {}
 
@@ -49,14 +48,8 @@ async def get_price(token_mint: str) -> float:
     Return the current price of `token_mint` in SOL.
 
     - Checks the in-memory cache first; returns cached value if < 30 s old.
-    - On cache miss, fetches from Jupiter Price API v2.
+    - On cache miss, fetches from Jupiter Price API v3.
     - Returns 0.0 on any network or parsing error (never raises).
-
-    Args:
-        token_mint: Base58 Solana mint address of the token.
-
-    Returns:
-        Price in SOL as a float (e.g. 0.00000142).
     """
     # ---- cache hit ----
     cached = _price_cache.get(token_mint)
@@ -68,7 +61,7 @@ async def get_price(token_mint: str) -> float:
     # ---- fetch ----
     price = await _fetch_price(token_mint)
 
-    # ---- populate cache (even on 0.0 so we don't hammer on bad mints) ----
+    # ---- populate cache ----
     _price_cache[token_mint] = {"price": price, "fetched_at": time.monotonic()}
     return price
 
@@ -78,8 +71,6 @@ async def get_prices(token_mints: list[str]) -> dict[str, float]:
     Batch-fetch prices for multiple mints in a single HTTP request.
     Returns a dict of {token_mint: price_in_sol}.
     Missing or errored mints get price 0.0.
-
-    Uses the cache the same way as get_price().
     """
     now = time.monotonic()
     to_fetch: list[str] = []
@@ -121,9 +112,7 @@ def invalidate(token_mint: str) -> None:
 # ---------------------------------------------------------------------------
 
 async def _fetch_price(token_mint: str) -> float:
-    """
-    Single-mint fetch from Jupiter.  Returns 0.0 on any error.
-    """
+    """Single-mint fetch. Returns 0.0 on any error."""
     prices = await _fetch_prices_batch([token_mint])
     return prices.get(token_mint, 0.0)
 
@@ -131,27 +120,15 @@ async def _fetch_price(token_mint: str) -> float:
 async def _fetch_prices_batch(token_mints: list[str]) -> dict[str, float]:
     """
     Fetch one or more mint prices from Jupiter in one request.
-
-    URL:
-        GET https://price.jup.ag/v6/price
-            ?ids=MINT1,MINT2,...
-            &vsToken=So111...112
-
-    Response shape:
-        {
-          "data": {
-            "<mint>": { "price": <float>, ... },
-            ...
-          },
-          "timeTaken": <float>
-        }
-
-    Returns a dict of {mint: price}; missing mints get 0.0.
+    Denominates them in SOL by dividing their USD price by the USD price of SOL.
     """
+    sol_price_usd = await get_sol_price_in_usd()
+    if sol_price_usd <= 0.0:
+        sol_price_usd = 140.0  # Safe fallback
+
     ids_param = ",".join(token_mints)
     params = {
         "ids": ids_param,
-        "vsToken": _WSOL_MINT,
     }
 
     try:
@@ -160,12 +137,12 @@ async def _fetch_prices_batch(token_mints: list[str]) -> dict[str, float]:
             resp.raise_for_status()
             payload = resp.json()
 
-        data: dict = payload.get("data", {})
         result: dict[str, float] = {}
         for mint in token_mints:
-            entry = data.get(mint)
-            if entry and "price" in entry:
-                result[mint] = float(entry["price"])
+            entry = payload.get(mint)
+            if entry and "usdPrice" in entry:
+                usd_price = float(entry["usdPrice"])
+                result[mint] = usd_price / sol_price_usd
             else:
                 result[mint] = 0.0
         return result
@@ -195,13 +172,11 @@ async def get_sol_price_in_usd() -> float:
             resp.raise_for_status()
             payload = resp.json()
 
-        data: dict = payload.get("data", {})
-        entry = data.get(_WSOL_MINT)
-        price = float(entry["price"]) if entry and "price" in entry else 140.0
+        entry = payload.get(_WSOL_MINT)
+        price = float(entry["usdPrice"]) if entry and "usdPrice" in entry else 140.0
     except Exception as exc:
         print(f"[jupiter] SOL USD price fetch failed: {exc}")
         price = 140.0  # Safe fallback
 
     _price_cache["SOL_USD"] = {"price": price, "fetched_at": time.monotonic()}
     return price
-

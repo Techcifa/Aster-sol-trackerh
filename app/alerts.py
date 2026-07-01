@@ -143,8 +143,9 @@ async def format_swap_buy(event: dict, label: str | None) -> str:
     usd_value = sol_amount * sol_price_usd
     usd_price = usd_value / token_amount if token_amount > 0 else 0.0
     
-    # Market Cap calculation
-    supply = await helius.get_token_supply(mint)
+    # Market Cap calculation (supply is returned in token metadata)
+    meta = await helius.get_token_metadata(mint)
+    supply = meta.get("supply", 1_000_000_000.0)
     market_cap = supply * usd_price
 
     # Position "Seen" calculation
@@ -186,8 +187,9 @@ async def format_swap_sell(event: dict, label: str | None) -> str:
     usd_value = sol_amount * sol_price_usd
     usd_price = usd_value / token_amount if token_amount > 0 else 0.0
     
-    # Market Cap calculation
-    supply = await helius.get_token_supply(mint)
+    # Market Cap calculation (supply is returned in token metadata)
+    meta = await helius.get_token_metadata(mint)
+    supply = meta.get("supply", 1_000_000_000.0)
     market_cap = supply * usd_price
 
     # Position "Seen" calculation

@@ -198,16 +198,17 @@ async def get_sol_balance(wallet: str) -> float:
 
 async def get_token_metadata(token_mint: str) -> dict:
     """
-    Fetch token symbol, name, and decimals via the Helius DAS API.
+    Fetch token symbol, name, decimals, and total supply via the Helius DAS API.
 
     Returns:
         {
             "symbol":   str,   # e.g. "BONK"
             "name":     str,   # e.g. "Bonk"
-            "decimals": int    # e.g. 5
+            "decimals": int,   # e.g. 5
+            "supply":   float  # e.g. 1000000000.0 (decimal-adjusted total supply)
         }
 
-    Falls back to {"symbol": token_mint[:6], "name": "Unknown", "decimals": 6}
+    Falls back to {"symbol": token_mint[:6], "name": "Unknown", "decimals": 6, "supply": 1000000000.0}
     on any error so the rest of the pipeline never breaks on a bad mint.
 
     Results are cached in _metadata_cache to avoid redundant network calls.
@@ -219,7 +220,12 @@ async def get_token_metadata(token_mint: str) -> dict:
         "jsonrpc": "2.0",
         "id": "get-asset",
         "method": "getAsset",
-        "params": {"id": token_mint},
+        "params": {
+            "id": token_mint,
+            "options": {
+                "showFungible": True
+            }
+        },
     }
 
     try:
@@ -237,46 +243,29 @@ async def get_token_metadata(token_mint: str) -> dict:
         name: str = metadata.get("name") or "Unknown"
         decimals: int = token_info.get("decimals", 6)
 
-        meta = {"symbol": symbol, "name": name, "decimals": decimals}
+        # Parse total supply from token_info
+        raw_supply = token_info.get("supply", 0)
+        supply = float(raw_supply) / (10 ** decimals) if decimals >= 0 else float(raw_supply)
+        if supply <= 0:
+            supply = 1_000_000_000.0  # Default memecoin supply fallback
+
+        meta = {
+            "symbol": symbol,
+            "name": name,
+            "decimals": decimals,
+            "supply": supply
+        }
 
     except Exception as exc:  # noqa: BLE001
         print(f"[helius] getAsset failed for {token_mint}: {exc}")
-        meta = {"symbol": token_mint[:6], "name": "Unknown", "decimals": 6}
+        meta = {
+            "symbol": token_mint[:6],
+            "name": "Unknown",
+            "decimals": 6,
+            "supply": 1_000_000_000.0
+        }
 
     _metadata_cache[token_mint] = meta
     return meta
 
-
-_supply_cache: dict[str, float] = {}
-
-
-async def get_token_supply(token_mint: str) -> float:
-    """
-    Fetch the total supply of a token mint using the Solana JSON-RPC getTokenSupply endpoint.
-    Caches the results to prevent repeated RPC queries.
-    """
-    if token_mint in _supply_cache:
-        return _supply_cache[token_mint]
-
-    payload = {
-        "jsonrpc": "2.0",
-        "id": "get-token-supply",
-        "method": "getTokenSupply",
-        "params": [token_mint],
-    }
-
-    try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.post(settings.helius_rpc_url, json=payload)
-            resp.raise_for_status()
-            data = resp.json()
-
-        supply_val = data["result"]["value"]["uiAmount"]
-        if supply_val is not None:
-            _supply_cache[token_mint] = float(supply_val)
-            return float(supply_val)
-    except Exception as exc:
-        print(f"[helius] Failed to fetch supply for {token_mint}: {exc}")
-
-    return 1_000_000_000.0  # Fallback default supply (1 Billion)
 
