@@ -66,6 +66,32 @@ async def get_price(token_mint: str) -> float:
     return price
 
 
+async def get_usd_price(token_mint: str) -> float | None:
+    """
+    Return the current price of `token_mint` in USD directly from Jupiter.
+
+    Unlike get_price(), this does NOT convert to SOL — it returns the raw
+    usdPrice field from the Jupiter Price API v3 response.
+
+    Returns None if the mint is unknown or the request fails, so callers can
+    distinguish "no data" from "price is 0".
+    """
+    params = {"ids": token_mint}
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(_JUPITER_PRICE_URL, params=params)
+            resp.raise_for_status()
+            payload = resp.json()
+
+        entry = payload.get(token_mint)
+        if entry and "usdPrice" in entry:
+            return float(entry["usdPrice"])
+        return None
+    except Exception as exc:  # noqa: BLE001
+        print(f"[jupiter] get_usd_price failed for {token_mint}: {exc}")
+        return None
+
+
 async def get_prices(token_mints: list[str]) -> dict[str, float]:
     """
     Batch-fetch prices for multiple mints in a single HTTP request.

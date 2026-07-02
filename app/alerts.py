@@ -48,8 +48,10 @@ def _format_elapsed_time(first_buy_at_iso: str | None) -> str:
         return "Unknown"
 
 
-def _format_market_cap(mc: float) -> str:
-    """Format market cap value cleanly (e.g. $3.65M, $120.5K)."""
+def _format_market_cap(mc: float | None) -> str:
+    """Format market cap value cleanly (e.g. $3.65M, $120.5K). Returns 'N/A' when mc is None."""
+    if mc is None:
+        return "N/A"
     if mc >= 1_000_000_000:
         return f"${mc / 1_000_000_000:.2f}B"
     elif mc >= 1_000_000:
@@ -138,15 +140,21 @@ async def format_swap_buy(event: dict, label: str | None) -> str:
     tx_sig = event["tx_sig"]
     source = event.get("source", "DEX")
 
-    # Fetch live market metrics
+    # Fetch live market metrics (trade execution price — used for display only)
     sol_price_usd = await jupiter.get_sol_price_in_usd()
     usd_value = sol_amount * sol_price_usd
     usd_price = usd_value / token_amount if token_amount > 0 else 0.0
-    
-    # Market Cap calculation (supply is returned in token metadata)
+
+    # Market Cap: use live pool price from Jupiter + confirmed on-chain supply.
+    # We intentionally do NOT reuse usd_price (trade price) here because it
+    # includes slippage/price-impact and varies per transaction.
     meta = await helius.get_token_metadata(mint)
-    supply = meta.get("supply", 1_000_000_000.0)
-    market_cap = supply * usd_price
+    supply = meta.get("supply")          # None when Helius returned no supply
+    pool_price_usd = await jupiter.get_usd_price(mint)  # None on failure
+    if supply is not None and pool_price_usd is not None and pool_price_usd > 0:
+        market_cap: float | None = supply * pool_price_usd
+    else:
+        market_cap = None
 
     # Position "Seen" calculation
     pos = await db.get_position(wallet, mint)
@@ -182,15 +190,19 @@ async def format_swap_sell(event: dict, label: str | None) -> str:
     tx_sig = event["tx_sig"]
     source = event.get("source", "DEX")
 
-    # Fetch live market metrics
+    # Fetch live market metrics (trade execution price — used for display only)
     sol_price_usd = await jupiter.get_sol_price_in_usd()
     usd_value = sol_amount * sol_price_usd
     usd_price = usd_value / token_amount if token_amount > 0 else 0.0
-    
-    # Market Cap calculation (supply is returned in token metadata)
+
+    # Market Cap: use live pool price from Jupiter + confirmed on-chain supply.
     meta = await helius.get_token_metadata(mint)
-    supply = meta.get("supply", 1_000_000_000.0)
-    market_cap = supply * usd_price
+    supply = meta.get("supply")          # None when Helius returned no supply
+    pool_price_usd = await jupiter.get_usd_price(mint)  # None on failure
+    if supply is not None and pool_price_usd is not None and pool_price_usd > 0:
+        market_cap: float | None = supply * pool_price_usd
+    else:
+        market_cap = None
 
     # Position "Seen" calculation
     pos = await db.get_position(wallet, mint)

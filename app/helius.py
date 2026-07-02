@@ -18,9 +18,40 @@ from app import database as db
 # ---------------------------------------------------------------------------
 # In-memory token metadata cache
 # key: token_mint str
-# value: {"symbol": str, "name": str, "decimals": int}
+# value: {"symbol": str, "name": str, "decimals": int, "supply": float, "is_fallback": bool}
+# Entries with is_fallback=True are NOT stored here — they are returned directly
+# so the next call retries the network instead of poisoning the cache forever.
 # ---------------------------------------------------------------------------
 _metadata_cache: dict[str, dict] = {}
+
+
+def _normalize_supply(raw_supply: float, decimals: int) -> float:
+    """
+    Safely convert a Helius token_info.supply value to a human-readable float.
+
+    Helius DAS getAsset always returns token_info.supply as the raw on-chain
+    integer (smallest unit), so we divide by 10**decimals.  However, if the
+    value were somehow already adjusted (e.g. routed through getTokenSupply's
+    uiAmount field by mistake) dividing again would make it absurdly small.
+
+    Heuristic: after dividing, if the result would be < 1_000 tokens it is
+    almost certainly wrong for a standard SPL token, which means the value
+    was already decimal-adjusted upstream — so we skip the division.
+    """
+    supply = float(raw_supply)
+    if decimals > 0:
+        divided = supply / (10 ** decimals)
+        # A legitimate post-division supply should be at least 1 000 tokens.
+        # If it isn't, the caller already passed an adjusted value.
+        if divided >= 1_000:
+            return divided
+        # Looks pre-adjusted — return as-is
+        print(
+            f"[helius] normalize_supply: skipping division (divided={divided:.4f} < 1000) "
+            f"raw={raw_supply} decimals={decimals} — treating as already adjusted"
+        )
+        return supply
+    return supply
 
 # ---------------------------------------------------------------------------
 # Helius REST API base URL (webhooks management)
@@ -200,21 +231,28 @@ async def get_token_metadata(token_mint: str) -> dict:
     """
     Fetch token symbol, name, decimals, and total supply via the Helius DAS API.
 
-    Returns:
+    Returns on success:
         {
-            "symbol":   str,   # e.g. "BONK"
-            "name":     str,   # e.g. "Bonk"
-            "decimals": int,   # e.g. 5
-            "supply":   float  # e.g. 1000000000.0 (decimal-adjusted total supply)
+            "symbol":      str,   # e.g. "BONK"
+            "name":        str,   # e.g. "Bonk"
+            "decimals":    int,   # e.g. 5
+            "supply":      float, # decimal-adjusted total supply
+            "is_fallback": False
         }
 
-    Falls back to {"symbol": token_mint[:6], "name": "Unknown", "decimals": 6, "supply": 1000000000.0}
-    on any error so the rest of the pipeline never breaks on a bad mint.
-
-    Results are cached in _metadata_cache to avoid redundant network calls.
+    Returns on failure (NOT cached — retried on next call):
+        {
+            "symbol":      str,
+            "name":        "Unknown",
+            "decimals":    6,
+            "supply":      None,   # Callers must treat None as "unavailable"
+            "is_fallback": True
+        }
     """
-    if token_mint in _metadata_cache:
-        return _metadata_cache[token_mint]
+    # Only return cached entry when it is real data, never a stale fallback.
+    cached = _metadata_cache.get(token_mint)
+    if cached is not None and not cached.get("is_fallback", False):
+        return cached
 
     payload = {
         "jsonrpc": "2.0",
@@ -239,32 +277,47 @@ async def get_token_metadata(token_mint: str) -> dict:
         metadata = content.get("metadata", {})
         token_info = result.get("token_info", {})
 
+        # Log raw token_info once per mint so we can verify the format manually.
+        print(f"[helius] token_info for {token_mint}: {token_info}")
+
         symbol: str = metadata.get("symbol") or token_mint[:6]
         name: str = metadata.get("name") or "Unknown"
         decimals: int = token_info.get("decimals", 6)
 
-        # Parse total supply from token_info
         raw_supply = token_info.get("supply", 0)
-        supply = float(raw_supply) / (10 ** decimals) if decimals >= 0 else float(raw_supply)
+        supply = _normalize_supply(float(raw_supply), decimals) if raw_supply else 0.0
+
         if supply <= 0:
-            supply = 1_000_000_000.0  # Default memecoin supply fallback
+            # Real supply is unavailable — return fallback WITHOUT caching.
+            print(f"[helius] supply unavailable for {token_mint} — will retry next call")
+            return {
+                "symbol": symbol,
+                "name": name,
+                "decimals": decimals,
+                "supply": None,
+                "is_fallback": True,
+            }
 
         meta = {
             "symbol": symbol,
             "name": name,
             "decimals": decimals,
-            "supply": supply
+            "supply": supply,
+            "is_fallback": False,
         }
 
     except Exception as exc:  # noqa: BLE001
         print(f"[helius] getAsset failed for {token_mint}: {exc}")
-        meta = {
+        # Do NOT cache — allow a retry on the next event for this mint.
+        return {
             "symbol": token_mint[:6],
             "name": "Unknown",
             "decimals": 6,
-            "supply": 1_000_000_000.0
+            "supply": None,
+            "is_fallback": True,
         }
 
+    # Only cache confirmed, real data.
     _metadata_cache[token_mint] = meta
     return meta
 
