@@ -6,10 +6,13 @@ Parses each transaction, handles database deduplication, and fans out
 HTML alerts to all Telegram users tracking the respective wallets.
 """
 
+import asyncio
 from fastapi import APIRouter, Request, HTTPException
 from app import database as db
 from app import parser
 from app import alerts
+from app import safety
+from app import helius
 
 router = APIRouter()
 
@@ -68,6 +71,32 @@ async def process_event(event: dict, bot) -> None:
     if not telegram_ids:
         return
 
+    # Pre-fetch first-buy metadata if this is a first buy
+    safety_report = None
+    balance_before = None
+    launch_time = None
+    is_first_buy = (
+        event_type == "SWAP"
+        and event.get("swap_type") == "BUY"
+        and event.get("is_first_buy")
+    )
+
+    if is_first_buy:
+        # Run concurrent lookups (5s timeout cap is handled inside the lookups)
+        safety_report, raw_balance_before, launch_time = await asyncio.gather(
+            safety.get_safety_report(event["token_out_mint"]),
+            db.get_sol_balance_before(wallet, event["timestamp"]),
+            helius.get_token_launch_time(event["token_out_mint"]),
+        )
+
+        # Fallback for balance_before if no snapshot exists yet
+        if raw_balance_before is None:
+            current_snapshot = await db.get_latest_sol_snapshot(wallet)
+            current_balance = current_snapshot["balance_sol"] if current_snapshot else None
+            balance_before = (current_balance or 0) + event["sol_amount"]
+        else:
+            balance_before = raw_balance_before
+
     # 3. Alert Formatting & Dispatch
     for tg_id in telegram_ids:
         label = await db.get_wallet_label(tg_id, wallet)
@@ -77,7 +106,12 @@ async def process_event(event: dict, bot) -> None:
         elif event_type == "TOKEN_TRANSFER":
             text = await alerts.format_token_transfer(event, label)
         elif event_type == "SWAP":
-            text = await alerts.format_swap(event, label)
+            if is_first_buy:
+                text = alerts.format_new_position_alert(
+                    event, safety_report, balance_before, launch_time, label
+                )
+            else:
+                text = await alerts.format_swap(event, label)
         else:
             text = ""
 

@@ -178,6 +178,113 @@ async def format_swap_buy(event: dict, label: str | None) -> str:
     )
 
 
+def format_new_position_alert(
+    event: dict,
+    safety_report: dict | None = None,
+    balance_before: float | None = None,
+    launch_time: int | None = None,
+    label: str | None = None,
+) -> str:
+    """
+    Format first-buy swap alert with safety, conviction, and launch timing details.
+    """
+    wallet = event["wallet"]
+    mint = event["token_out_mint"]
+    symbol = event["token_out_symbol"]
+    sol_amount = event["sol_amount"]
+    token_amount = event["token_out_amount"]
+    tx_sig = event["tx_sig"]
+    price_per_token = event.get("price_per_token") or (sol_amount / token_amount if token_amount > 0 else 0.0)
+
+    # 1. Conviction sizing
+    conviction_line = ""
+    if balance_before and balance_before > 0:
+        pct = (sol_amount / balance_before) * 100
+        if pct >= 20.0:
+            flag = " 🔥 high conviction"
+        elif pct < 5.0:
+            flag = " 🩸 small position"
+        else:
+            flag = ""
+        conviction_line = f"Conviction: <b>{pct:.1f}%</b> of wallet{flag}\n"
+    else:
+        conviction_line = "Conviction: <b>unknown</b>\n"
+
+    # 2. Entry timing
+    entry_timing = "unknown"
+    if launch_time:
+        seconds_since_launch = event["timestamp"] - launch_time
+        if seconds_since_launch < 0:
+            seconds_since_launch = 0
+
+        minutes = seconds_since_launch / 60
+        if minutes < 10:
+            entry_timing = f"🚀 EARLY ({minutes:.0f}m after launch)"
+        elif minutes < 60:
+            entry_timing = f"⏱️ {minutes:.0f}m after launch"
+        else:
+            hours = minutes / 60
+            if hours < 24:
+                entry_timing = f"🐢 {hours:.1f}h after launch"
+            else:
+                days = hours / 24
+                entry_timing = f"📅 {days:.0f}d after launch (established)"
+
+    # 3. Safety report
+    if not safety_report:
+        safety_report = {
+            "risk_score": None,
+            "risk_level": "UNKNOWN",
+            "mint_revoked": None,
+            "freeze_revoked": None,
+            "liquidity_usd": None,
+            "top_holder_pct": None,
+            "red_flags": [],
+        }
+
+    risk_level = safety_report.get("risk_level", "UNKNOWN")
+    risk_score = safety_report.get("risk_score")
+    red_flags = safety_report.get("red_flags", [])
+    mint_revoked = safety_report.get("mint_revoked")
+    liquidity_usd = safety_report.get("liquidity_usd")
+
+    emoji_map = {
+        "LOW": "🟢",
+        "MODERATE": "🟡",
+        "HIGH": "🔴",
+        "UNKNOWN": "⚪",
+    }
+    safety_emoji = emoji_map.get(risk_level, "⚪")
+    score_suffix = f" (score {risk_score})" if risk_score is not None else ""
+    red_flags_str = "⚠️ " + ", ".join(red_flags) if red_flags else "✅ No major flags"
+
+    mint_auth_str = ""
+    if mint_revoked is True:
+        mint_auth_str = "🔓 Mint: revoked"
+    elif mint_revoked is False:
+        mint_auth_str = "🔴 Mint: NOT revoked"
+
+    liq_val = f"${liquidity_usd:,.0f}" if liquidity_usd else "unknown"
+    wallet_display = _get_wallet_display(wallet, label)
+
+    return (
+        f"🆕🟢 <b>NEW POSITION</b>\n"
+        f"Wallet: <code>{wallet_display}</code>\n\n"
+        f"Aping into <b>${symbol}</b>\n"
+        f"Spent: <b>{sol_amount:.4f} SOL</b>\n"
+        f"Got: <b>{token_amount:,.0f} {symbol}</b>\n"
+        f"Price: <b>{price_per_token:.8f} SOL</b>\n\n"
+        f"{conviction_line}"
+        f"Entry timing: <b>{entry_timing}</b>\n\n"
+        f"{safety_emoji} Safety: <b>{risk_level}</b>{score_suffix}\n"
+        f"{red_flags_str}\n"
+        f"{mint_auth_str + '\n' if mint_auth_str else ''}"
+        f"Liquidity: <b>{liq_val}</b>\n\n"
+        f"CA: <code>{mint}</code>\n"
+        f"🔗 <a href=\"https://solscan.io/tx/{tx_sig}\">View tx</a>"
+    )
+
+
 async def format_swap_sell(event: dict, label: str | None) -> str:
     """
     🔴 SELL event formatted to user's layout.

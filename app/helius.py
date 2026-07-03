@@ -24,6 +24,10 @@ from app import database as db
 # ---------------------------------------------------------------------------
 _metadata_cache: dict[str, dict] = {}
 
+# Cache for token launch times (Unix epoch timestamps).
+# Since a token's launch time never changes once determined, we cache this permanently.
+_launch_time_cache: dict[str, int] = {}
+
 
 def _normalize_supply(raw_supply: float, decimals: int) -> float:
     """
@@ -320,5 +324,54 @@ async def get_token_metadata(token_mint: str) -> dict:
     # Only cache confirmed, real data.
     _metadata_cache[token_mint] = meta
     return meta
+
+
+async def get_token_launch_time(mint: str) -> int | None:
+    """
+    Returns the estimated Unix timestamp of token creation (earliest tx on the mint account).
+    Returns None if it cannot be determined within the pagination cap.
+    Cache aggressively — this value never changes once found.
+    """
+    if mint in _launch_time_cache:
+        return _launch_time_cache[mint]
+
+    earliest_sig = None
+    before = None
+
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        for _ in range(3):  # pagination cap (3 pages of 1000 sigs)
+            params = [mint, {"limit": 1000}]
+            if before:
+                params[1]["before"] = before
+
+            payload = {
+                "jsonrpc": "2.0",
+                "id": "get-sigs",
+                "method": "getSignaturesForAddress",
+                "params": params,
+            }
+
+            try:
+                resp = await client.post(settings.helius_rpc_url, json=payload)
+                resp.raise_for_status()
+                data = resp.json()
+                sigs = data.get("result", [])
+            except Exception as exc:
+                print(f"[helius] getSignaturesForAddress RPC failed for {mint}: {exc}")
+                break
+
+            if not sigs:
+                break
+
+            earliest_sig = sigs[-1]
+            before = earliest_sig.get("signature")
+            if len(sigs) < 1000:
+                break  # reached the actual start of transactions
+
+    launch_time = earliest_sig.get("blockTime") if earliest_sig else None
+    if launch_time:
+        _launch_time_cache[mint] = launch_time
+    return launch_time
+
 
 

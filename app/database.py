@@ -443,6 +443,25 @@ async def get_latest_sol_snapshot(wallet: str) -> dict | None:
             return dict(row) if row else None
 
 
+async def get_sol_balance_before(wallet: str, before_timestamp: int) -> float | None:
+    """
+    Returns the most recent SOL balance snapshot recorded before the given timestamp (Unix epoch).
+    Used to compute conviction sizing at time-of-buy, not current balance.
+    """
+    async with _connect() as db:
+        async with db.execute(
+            """
+            SELECT balance_sol FROM sol_snapshots
+            WHERE wallet = ? AND CAST(strftime('%s', recorded_at) AS INTEGER) <= ?
+            ORDER BY recorded_at DESC
+            LIMIT 1
+            """,
+            (wallet, before_timestamp),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else None
+
+
 # ---------------------------------------------------------------------------
 # Alerts deduplication
 # ---------------------------------------------------------------------------
