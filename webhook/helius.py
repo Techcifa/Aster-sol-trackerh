@@ -125,5 +125,13 @@ async def process_event(event: dict, bot) -> None:
             except Exception as bot_err:
                 print(f"[helius webhook] Bot failed to send message to user {tg_id}: {bot_err}")
 
+    # 4. Check and record position closure on sell/token swap
+    if event_type == "SWAP" and event.get("swap_type") in ("SELL", "TOKEN_SWAP"):
+        from app.pnl_check import check_and_record_closure
+        try:
+            await check_and_record_closure(wallet, event["token_in_mint"])
+        except Exception as exc:
+            print(f"[helius webhook] Error in check_and_record_closure for {wallet}: {exc}")
+
     # Mark as sent to prevent duplicate notifications from future retries/pushes
     await db.mark_alert_sent(tx_sig, wallet, event_type)

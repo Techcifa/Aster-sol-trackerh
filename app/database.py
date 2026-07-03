@@ -76,6 +76,22 @@ CREATE TABLE IF NOT EXISTS alerts_sent (
     sent_at     TEXT DEFAULT (datetime('now')),
     PRIMARY KEY (tx_sig, wallet, alert_type)
 );
+
+CREATE TABLE IF NOT EXISTS closed_positions (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    wallet            TEXT NOT NULL,
+    token_mint        TEXT NOT NULL,
+    token_symbol      TEXT,
+    total_bought      REAL NOT NULL,
+    total_spent_sol   REAL NOT NULL,
+    total_sold        REAL NOT NULL,
+    total_received_sol REAL NOT NULL,
+    realized_pnl_sol  REAL NOT NULL,
+    realized_pnl_pct  REAL NOT NULL,
+    opened_at         TEXT,
+    closed_at         TEXT DEFAULT (datetime('now')),
+    UNIQUE(wallet, token_mint, closed_at)
+);
 """
 
 # ---------------------------------------------------------------------------
@@ -493,3 +509,106 @@ async def mark_alert_sent(tx_sig: str, wallet: str, alert_type: str) -> None:
             (tx_sig, wallet, alert_type),
         )
         await db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Closed Positions & Win-rate Scoring
+# ---------------------------------------------------------------------------
+
+async def get_closed_position(wallet: str, token_mint: str, closed_at: str) -> dict | None:
+    """
+    Get a closed position row by wallet, token mint, and close timestamp to check if it's already recorded.
+    """
+    async with _connect() as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM closed_positions WHERE wallet = ? AND token_mint = ? AND closed_at = ?",
+            (wallet, token_mint, closed_at),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+
+async def insert_closed_position(
+    wallet: str,
+    token_mint: str,
+    token_symbol: str | None,
+    total_bought: float,
+    total_spent_sol: float,
+    total_sold: float,
+    total_received_sol: float,
+    realized_pnl_sol: float,
+    realized_pnl_pct: float,
+    opened_at: str | None,
+    closed_at: str | None = None,
+) -> None:
+    """
+    Insert a newly closed position into the closed_positions table.
+    """
+    async with _connect() as db:
+        await db.execute(
+            """
+            INSERT INTO closed_positions (
+                wallet, token_mint, token_symbol, total_bought, total_spent_sol,
+                total_sold, total_received_sol, realized_pnl_sol, realized_pnl_pct, opened_at, closed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')))
+            """,
+            (
+                wallet,
+                token_mint,
+                token_symbol,
+                total_bought,
+                total_spent_sol,
+                total_sold,
+                total_received_sol,
+                realized_pnl_sol,
+                realized_pnl_pct,
+                opened_at,
+                closed_at,
+            ),
+        )
+        await db.commit()
+
+
+async def get_wallet_score(wallet: str) -> dict:
+    """
+    Aggregates closed_positions for a wallet into a win-rate score.
+    Returns:
+      - total_closed: int
+      - wins: int              (realized_pnl_sol > 0)
+      - losses: int
+      - win_rate_pct: float | None
+      - avg_pnl_pct: float | None    (simple average of realized_pnl_pct across closes)
+      - total_realized_pnl_sol: float
+    """
+    async with _connect() as db:
+        async with db.execute(
+            "SELECT realized_pnl_sol, realized_pnl_pct FROM closed_positions WHERE wallet = ?",
+            (wallet,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+
+    if not rows:
+        return {
+            "total_closed": 0,
+            "wins": 0,
+            "losses": 0,
+            "win_rate_pct": None,
+            "avg_pnl_pct": None,
+            "total_realized_pnl_sol": 0.0,
+        }
+
+    wins = sum(1 for pnl_sol, _ in rows if pnl_sol > 0)
+    losses = len(rows) - wins
+    avg_pnl_pct = sum(pct for _, pct in rows) / len(rows)
+    total_realized = sum(pnl_sol for pnl_sol, _ in rows)
+
+    return {
+        "total_closed": len(rows),
+        "wins": wins,
+        "losses": losses,
+        "win_rate_pct": (wins / len(rows)) * 100,
+        "avg_pnl_pct": avg_pnl_pct,
+        "total_realized_pnl_sol": total_realized,
+    }
+

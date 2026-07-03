@@ -14,6 +14,7 @@ from app.bot.commands.remove import remove_wallet_handler
 from app.bot.commands.wallets import list_wallets_handler
 from app.bot.commands.pnl import wallet_pnl_handler
 from app.bot.commands.sol import wallet_sol_handler
+from app.bot.commands.pnlcard import wallet_pnlcard_handler
 
 router = Router()
 
@@ -43,6 +44,7 @@ async def start_handler(message: Message) -> None:
         "• <code>/wallets</code> — List all wallets you are tracking\n"
         "• <code>/sol &lt;wallet&gt;</code> — Get current live SOL balance\n"
         "• <code>/pnl &lt;wallet&gt;</code> — View unrealized PnL of open positions\n"
+        "• <code>/pnlcard &lt;wallet&gt; &lt;token_mint_or_symbol&gt;</code> — Generate visual PnL card image\n"
     )
 
     await message.reply(welcome_text, parse_mode="HTML")
@@ -54,3 +56,4 @@ router.message.register(remove_wallet_handler, Command("remove"))
 router.message.register(list_wallets_handler, Command("wallets"))
 router.message.register(wallet_pnl_handler, Command("pnl"))
 router.message.register(wallet_sol_handler, Command("sol"))
+router.message.register(wallet_pnlcard_handler, Command("pnlcard"))

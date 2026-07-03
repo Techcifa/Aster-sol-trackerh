@@ -34,9 +34,23 @@ async def list_wallets_handler(message: Message) -> None:
         bal = w.get("latest_balance_sol")
         bal_val = float(bal) if bal is not None else 0.0
 
+        # Fetch wallet scoring
+        score = await db.get_wallet_score(w["wallet"])
+        if score["total_closed"] == 0:
+            score_line = "📊 No closed positions yet"
+        else:
+            emoji = "🟢" if score["win_rate_pct"] >= 50 else "🔴"
+            score_line = (
+                f"{emoji} Win rate: <b>{score['win_rate_pct']:.0f}%</b> "
+                f"({score['wins']}W/{score['losses']}L) · "
+                f"Avg: <b>{score['avg_pnl_pct']:+.1f}%</b> · "
+                f"Realized: <b>{score['total_realized_pnl_sol']:+.4f} SOL</b>"
+            )
+
         response += (
             f"{idx}. <code>{w['wallet']}</code>{label_text}\n"
             f"   SOL: <b>{bal_val:.4f}</b>\n"
+            f"   {score_line}\n"
             f"   Added: {w['added_at']}\n\n"
         )
 
